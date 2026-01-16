@@ -25,12 +25,6 @@ bwa index hg38.analysisSet.fa
 ### Run Alignment: Alignment:
 bwa mem -t 8 hg38.analysisSet.fa processed.fastq.gz | samtools view -bS - > aligned.bam
 
-### Sort the BAM:
-samtools sort aligned.bam -o aligned_sorted.bam
-samtools index aligned_sorted.bam
-
-### Deduplicate (The Goal): 
-umi_tools dedup -I aligned_sorted.bam --output-stats=dedup_stats.txt -S deduplicated.bam
 
 #1. 1 使用 fgbio 将标题行中的 UMI 提取到 RX 标签，并进行坐标排序
 # 注意：UMI-tools 默认生成的格式是 _UMI，fgbio 可以识别
@@ -38,7 +32,7 @@ fgbio AnnotateBamWithUmis \
     -i aligned.bam \  #### should use the deduplicated.bam
     -o aligned_with_rx.bam \
     -t RX \
-    -f _UMI
+    -f _
 
 # 1.2 使用 samtools 进行排序
 samtools sort -@ 8 aligned_with_rx.bam -o aligned_sorted.bam
@@ -512,3 +506,4 @@ def export_clinical_report(mrd_results):
 # 执行生成
 generate_audit_log(mrd_report)
 export_clinical_report(mrd_report)
+
