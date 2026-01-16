@@ -1,53 +1,40 @@
+### step0 Preprocessing & UMI Extraction
+# 0.1 Download small example UMI dataset
+wget https://github.com/CGATOxford/UMI-tools/releases/download/v0.2.3/example.fastq.gz
 
-
-
-##step 0 Preprocessing
-## UMI database
- wget https://github.com/CGATOxford/UMI-tools/releases/download/v0.2.3/example.fastq.gz
-
-## conda create -n umi_env -c bioconda umi_tools
-## conda activate umi_env
-
-# 提取 UMI 并在当前目录生成 processed.fastq.gz
+# 0.2 Extract UMI from sequence and append to Read Name (header)
+# Pattern NNNXXXXNN extracts 5bp UMI while removing the 9bp barcode/adapter
 umi_tools extract --stdin=example.fastq.gz --bc-pattern=NNNXXXXNN --log=processed.log --stdout=processed.fastq.gz
-zcat processed.fastq.gz | head -n 4  ###chenck UMI
 
-wget ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz
-gunzip GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz
-mv GCA_000001405.15_GRCh38_no_alt_analysis_set.fna hg38.analysisS.fa
+# 0.3 Download Human Reference (hg38 No-Alt Analysis Set)
+wget https://hgdownload.soe.ucsc.edu
+gunzip hg38.analysisSet.fa.gz
 
-
-###step 1.0 Read Alignment
-### Index for BWA:
-# This step is required for alignment and takes time
+###step1 Read Alignment & UMI Tagging
+# 1.1 Index Reference (Only needs to be done once)
 bwa index hg38.analysisSet.fa
 
-### Run Alignment: Alignment:
+# 1.2 Align reads to Reference
 bwa mem -t 8 hg38.analysisSet.fa processed.fastq.gz | samtools view -bS - > aligned.bam
 
-
-#1. 1 使用 fgbio 将标题行中的 UMI 提取到 RX 标签，并进行坐标排序
-# 注意：UMI-tools 默认生成的格式是 _UMI，fgbio 可以识别
+# 1.3 Move UMI from Read Name to the RX BAM Tag
+# NOTE: Removed 'dedup' step. We go directly from alignment to tagging.
 fgbio AnnotateBamWithUmis \
-    -i aligned.bam \  #### should use the deduplicated.bam
+    -i aligned.bam \
     -o aligned_with_rx.bam \
     -t RX \
     -f _
 
-# 1.2 使用 samtools 进行排序
+# 1.4 Coordinate Sort & Index
 samtools sort -@ 8 aligned_with_rx.bam -o aligned_sorted.bam
 samtools index aligned_sorted.bam
 
-# 1.3 Read-Level QC 报告
-## 检查插入片段大小（Insert Size），确保 cfDNA 特征符合约 167bp：
+# 1.5 QC: Check Insert Size (cfDNA should peak ~167bp)
 samtools stats aligned_sorted.bam | grep "insert size average"
 
 
-#### step 2 UMI Consensus Building
-###2.0 使用 fgbio 工具进行 UMI 共识序列构建
-# 安装 fgbio: conda install -c bioconda fgbio
-
-###2.1 识别 UMI 家族 (Group Reads by UMI)
+###step2 UMI Consensus Building
+# 2.1 Group Reads by UMI (Family identification)
 fgbio GroupReadsByUmi \
     --input=aligned_sorted.bam \
     --output=grouped.bam \
@@ -55,61 +42,42 @@ fgbio GroupReadsByUmi \
     --edits=1 \
     --min-mapq=30
 
-### --strategy=adjacency: 允许 UMI 有 1bp 的测序错误。
-###--min-mapq=30: 丢弃低质量比对。
-
-###2.2  生成共识序列 (Call Molecular Consensus)
+# 2.2 Call Molecular Consensus (Collapsing families into single high-quality molecules)
 fgbio CallMolecularConsensusReads \
     --input=grouped.bam \
     --output=unaligned_consensus.bam \
     --min-reads=2 \
     --min-input-base-quality=20
 
-### --min-reads=2: 每个 UMI 家族至少需要 2 个读段支持以生成共识序列。
-###--min-reads=2: 一个分子至少要有 2 条原始 Read 支持才会被保留，这是过滤随机错误的核心。
-
-###2.3  比对共识序列 (Align Consensus Reads)
-# 将共识 BAM 转回 Fastq 并比对
+# 2.3 Re-align Consensus Reads (Mapping molecules back to genome)
 samtools fastq unaligned_consensus.bam | \
 bwa mem -t 8 -p hg38.analysisSet.fa - | \
 samtools view -bS - > consensus_aligned.bam
 
-# 最终排序
+# 2.4 Final Sort and Index for the Consensus BAM
 samtools sort consensus_aligned.bam -o consensus_final.bam
 samtools index consensus_final.bam
 
 
-##step 3 Variant Calling : High-Sensitivity Variant Calling
-
-###3.1 创建序列字典 (必需) .dict
+###step3 Variant Calling    
+# 3.1 Create Dictionary
 samtools dict hg38.analysisSet.fa -o hg38.analysisSet.dict
 
-###3.2 GATK Mutect2
-# 运行 Mutect2
-# --min-pair-barcodes: 对应 UMI 共识后的分子支持数，设为 1 以追求极限灵敏度
-# --initial-tumor-lod: 降低对肿瘤信号的似然值门槛（默认 5.5，降至 2.0）
-# --max-reads-per-alignment-start: 设为 0 禁用默认的降采样，保留所有超深度数据
+# 3.2 Mutect2 Sensitive Mode
+# initial-tumor-lod 2.0 allows detection of ultra-low frequency variants
 gatk Mutect2 \
     -R hg38.analysisSet.fa \
     -I consensus_final.bam \
-    -O raw_sensitivie_calls.vcf.gz \
+    -O raw_sensitive_calls.vcf.gz \
     --initial-tumor-lod 2.0 \
-    --min-base-quality-score 20 \
-    --max-reads-per-alignment-start 0 \
-    --independent-mates
+    --max-reads-per-alignment-start 0
 
-###3.3 过滤低质量 变异筛选 (FilterMutectCalls)
+# 3.3 Filter for 0.01% VAF threshold
 gatk FilterMutectCalls \
     -R hg38.analysisSet.fa \
-    -V raw_sensitivie_calls.vcf.gz \
+    -V raw_sensitive_calls.vcf.gz \
     -O filtered_sensitive_calls.vcf.gz \
-    --min-median-read-generation 1 \
     --min-allele-fraction 0.0001
-
-#######--min-allele-fraction 0.0001: 显式指定保留 0.01% 丰度的位点
-
-
-
 
 ##step 4 Variant Annotation 
 ## Ensembl VEP (Variant Effect Predictor)
@@ -506,4 +474,5 @@ def export_clinical_report(mrd_results):
 # 执行生成
 generate_audit_log(mrd_report)
 export_clinical_report(mrd_report)
+
 
