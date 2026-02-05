@@ -32,6 +32,36 @@ samtools index aligned_sorted.bam
 # 1.5 QC: Check Insert Size (cfDNA should peak ~167bp)
 samtools stats aligned_sorted.bam | grep "insert size average"
 
+#############################################
+## in case of R1 and R2###
+# Pattern for UMI at the start of R1 (e.g., first 8bp)
+# --bc-pattern: defines UMI on R1
+# --read2-stdout: ensures the output for R2 is handled correctly
+umi_tools extract \
+    --stdin=R1.fastq.gz \
+    --read2-in=R2.fastq.gz \
+    --bc-pattern=NNNNNNNN \
+    --stdout=R1_processed.fastq.gz \
+    --read2-out=R2_processed.fastq.gz \
+    --log=processed.log
+
+# 1.2 Align Paired-End reads
+bwa mem -t 8 -p hg38.analysisSet.fa R1_processed.fastq.gz R2_processed.fastq.gz | \
+samtools view -bS - > aligned.bam
+
+# 1.3.1 Sort the BAM (Required for UMI-tools)
+samtools sort aligned.bam -o aligned_sorted.bam
+samtools index aligned_sorted.bam
+
+# 1.3.2 Group and Deduplicate (Standard UMI-tools approach)
+# This identifies the "best" read in each UMI family
+
+umi_tools dedup -I aligned_sorted.bam --output-stats=dedup_stats -S deduplicated.bam
+Use code with caution.
+
+#Important Warning for MRD/ctDNA
+#umi_tools dedup is great for counting (RNA-seq), but for ctDNA Mutation Calling, it is often better to use Consensus Calling 
+## (which creates a new "virtual" read based on all family members).
 
 ###step2 UMI Consensus Building
 # 2.1 Group Reads by UMI (Family identification)
@@ -474,5 +504,6 @@ def export_clinical_report(mrd_results):
 # 执行生成
 generate_audit_log(mrd_report)
 export_clinical_report(mrd_report)
+
 
 
