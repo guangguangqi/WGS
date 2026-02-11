@@ -1,16 +1,17 @@
-Raw FASTQ
-   ↓ QC / Trimming
-Clean Reads
-   ↓ Host Contaminant Removal
+#1 Raw FASTQ
+   QC / Trimming
+##2 Clean Reads
+    Host Contaminant Removal
+
 Filtered Reads
-   ↓ Taxonomic Profiling (Kraken2/MetaPhlAn3)
-   ↓ Optional Assembly → Binning → MAGs
-   ↓ Gene Prediction & Functional Annotation (Prokka, HUMAnN3)
-   ↓ Abundance / Diversity Analysis
-   ↓ Statistical Analysis / Visualization
+###3 Taxonomic Profiling (Kraken2/MetaPhlAn3)
+#### 4, 5 Optional Assembly → Binning → MAGs
+######6   Gene Prediction & Functional Annotation (Prokka, HUMAnN3)
+#######7  Abundance / Diversity Analysis
+########8 Statistical Analysis / Visualization
 
-
-1️⃣ Raw Data (FASTQ) Quality Control
+##########
+#1 Raw Data (FASTQ) Quality Control
 
 Goal: Remove low-quality reads, adapters, contaminants.
 
@@ -31,7 +32,8 @@ trimmomatic PE -threads 8 \
 # Summarize QC
 multiqc qc_reports/
 
-2️⃣ Host or Contaminant Filtering
+#####
+##2 Host or Contaminant Filtering
 
 Goal: Remove reads from the host (human, mouse, plant, etc.)
 
@@ -47,7 +49,8 @@ bowtie2 -x host_index -1 sample_R1.trimmed.fastq.gz -2 sample_R2.trimmed.fastq.g
 
 sample_clean.1.fastq.gz & sample_clean.2.fastq.gz are non-host reads.
 
-3️⃣ Taxonomic Profiling
+#####
+###3 Taxonomic Profiling
 
 Goal: Identify which microbes are present and their relative abundance.
 
@@ -64,7 +67,8 @@ bracken -d kraken2_db -i sample.kraken.report -o sample.bracken.txt -r 150
 
 Output: Taxonomic abundance at species, genus, phylum levels.
 
-4️⃣ Assembly (Optional, for MAGs)
+#####
+####4 Assembly (Optional, for MAGs)
 
 Goal: Assemble reads into contigs to reconstruct genomes or gene catalogs.
 
@@ -75,7 +79,8 @@ megahit -1 sample_clean.1.fastq.gz -2 sample_clean.2.fastq.gz -o megahit_output
 
 # Output: megahit_output/final.contigs.fa
 
-5️⃣ Binning (Optional, for Metagenome-Assembled Genomes, MAGs)
+#####
+#####5 Binning (Optional, for Metagenome-Assembled Genomes, MAGs)
 
 Goal: Group contigs into genome bins.
 
@@ -87,7 +92,8 @@ metabat2 -i megahit_output/final.contigs.fa -o bins_dir/bin
 
 Output: bins_dir/bin.*.fa → reconstructed genomes
 
-6️⃣ Gene Prediction / Functional Annotation
+#####
+######6 Gene Prediction / Functional Annotation
 
 Goal: Identify genes and assign functions/pathways.
 
@@ -102,7 +108,8 @@ emapper.py -i prokka_out/sample.faa -o sample.eggnog --cpu 8
 
 Can also use HUMAnN3 for pathway-level abundance without assembly.
 
-7️⃣ Abundance Profiling (Genes / Pathways)
+#####
+#######7 Abundance Profiling (Genes / Pathways)
 
 Tools: HUMAnN3 (for pathway abundance), featureCounts, Salmon (for gene abundance)
 
@@ -112,7 +119,8 @@ humann --input sample_clean.fastq.gz --output humann_output/
 
 Output: Gene family abundance, pathway coverage, and pathway abundance.
 
-8️⃣ Diversity Analysis / Downstream Statistics
+#####
+########8 Diversity Analysis / Downstream Statistics
 
 Goal: Alpha/beta diversity, differential abundance, functional enrichment.
 
