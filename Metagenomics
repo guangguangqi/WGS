@@ -1,0 +1,73 @@
+Pipeline
+# 1. QC & Trimming
+# 2. Host Removal (Mapping against Human GRCh38)
+# 3. Taxonomic Profiling (MetaPhlAn4)
+# 4. Functional Profiling (HUMAnN3)
+# 5. Load Feature Table ---
+# 6. Normalization (CLR) 
+# 7. Metadata Integration
+# 8. Statistical Modeling
+
+# 1. QC & Trimming
+fastp -i sample_R1.fastq.gz -I sample_R2.fastq.gz \
+      -o clean_R1.fq.gz -O clean_R2.fq.gz \
+      --html report.html --thread 8
+
+# 2. Host Removal (Mapping against Human GRCh38)
+# We keep the "unmapped" reads (f 12) which are the microbial reads
+bowtie2 -x /path/to/grch38_index -1 clean_R1.fq.gz -2 clean_R2.fq.gz \
+        --very-sensitive --threads 8 | \
+samtools fastq -f 12 -1 filtered_R1.fq.gz -2 filtered_R2.fq.gz
+
+# 3. Taxonomic Profiling (MetaPhlAn4)
+metaphlan filtered_R1.fq.gz,filtered_R2.fq.gz --bowtie2out sample.bowtie2.bz2 \
+          --nproc 8 --input_type fastq --output_file abundance_table.txt
+
+# 4. Functional Profiling (HUMAnN3)
+# Note: Input is the joined filtered fastq
+cat filtered_R1.fq.gz filtered_R2.fq.gz > joined.fq.gz
+humann --input joined.fq.gz --output humann_out --threads 8 \
+       --taxonomic-profile abundance_table.txt
+
+# Load libraries
+library(compositions) # For CLR
+library(Maaslin2)     # For Statistical Modeling
+library(tidyverse)
+
+# --- Step 5: Load Feature Table ---
+# Rows = Samples, Cols = Species
+features <- read.table("species_abundance_matrix.tsv", header=TRUE, row.names=1, sep="\t")
+
+# --- Step 6: Normalization (CLR) ---
+# Add pseudocount to handle zeros, then apply CLR
+features_fixed <- features + 1
+features_clr <- clr(features_fixed)
+# Convert back to data frame
+features_clr_df <- as.data.frame(as.matrix(features_clr))
+
+# --- Step 7: Metadata Integration ---
+metadata <- read.csv("clinical_metadata.csv", row.names=1)
+# Ensure samples match between features and metadata
+common_samples <- intersect(rownames(features_clr_df), rownames(metadata))
+features_final <- features_clr_df[common_samples, ]
+metadata_final <- metadata[common_samples, ]
+
+# --- Step 8: Statistical Modeling (Biomarker Discovery) ---
+# Question: Which species are associated with 'Diagnosis', controlling for 'Age'?
+fit_data <- Maaslin2(
+    input_data = features_final, 
+    input_metadata = metadata_final, 
+    output = "maaslin2_results", 
+    fixed_effects = c("Diagnosis", "Age"),
+    normalization = "NONE", # We already did CLR
+    transform = "NONE",     # We already did Log via CLR
+    analysis_method = "LM", # Linear Model
+    correction = "BH"       # FDR correction
+)
+
+# --- Optional: Machine Learning (Random Forest) ---
+library(randomForest)
+rf_model <- randomForest(x = features_final, 
+                         y = as.factor(metadata_final$Diagnosis), 
+                         ntree = 500, importance = TRUE)
+importance_plot <- varImpPlot(rf_model)
