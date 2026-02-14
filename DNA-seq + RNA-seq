@@ -1,3 +1,16 @@
+FASTQ
+│
+├── DNA-seq ── Alignment ── Variant Calling ── CNV ── Clonality
+│
+├── RNA-seq ── Alignment ── Expression ── Pathway ── Immune
+│
+└────────────── Cross-omic Integration ──────────────┐
+                                                      ↓
+                                          Multi-omic Feature Matrix
+                                                      ↓
+                                         Clinical Modeling (Response / Survival)
+                                                      ↓
+                                            Translational Decision Support
 ### DNA-seq X RNA-seq pipeline
 Layer 1 — Raw Data Processing
 Layer 2 — Molecular Feature Abstraction
