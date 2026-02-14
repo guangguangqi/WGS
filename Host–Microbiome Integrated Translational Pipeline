@@ -1,0 +1,198 @@
+Host DNA/RNA                 Shotgun Metagenomics
+              │                               │
+        Variant / Expression          Taxonomy / Function
+              │                               │
+         Host Features                Microbial Features
+                     │
+        Host–Microbiome Interaction Network
+                     │
+            Integrated Patient Embedding
+                     │
+        Clinical Prediction / Biomarker Discovery
+
+#1. Load Feature Matrices
+#2 Layer 2 — Domain-Level Abstraction
+ 2.1 Host RNA → Pathway Scores (ssGSEA / GSVA in R)
+ 2.2 Immune Deconvolution (CIBERSORT-style regression concept)
+ 2.3  Microbial Functional Scores
+#3 Layer 3 — Host–Microbe Interaction Modeling
+ 3.1 mbQTL Mapping (Host SNP ↔ Microbe Abundance)
+ 3.2 Microbial Pathway ↔ Host Immune Pathway Coupling
+ 3.3 Latent Integration (Multi-omic Embedding)
+#4 Layer 4 — Clinical Modeling
+ 4.1 Drug Response Prediction
+ 4.2 Survival Analysis
+
+
+## Host–Microbiome Integrated Translational Pipeline
+####################################
+#1. Load Feature Matrices
+#Host variant calling via GATK
+#RNA alignment via STAR
+#Microbiome profiling via MetaPhlAn
+#Functional profiling via HUMAnN
+
+import pandas as pd
+import numpy as np
+
+# Host DNA features (SNPs or selected variants)
+host_genotype = pd.read_csv("host_genotype_matrix.csv", index_col=0)
+
+# Host RNA expression (normalized TPM or counts)
+rna_expr = pd.read_csv("rna_tpm_matrix.csv", index_col=0)
+
+# Microbiome taxonomic abundance
+microbe_taxa = pd.read_csv("metaphlan_abundance.csv", index_col=0)
+
+# Microbial functional pathways
+microbe_pathway = pd.read_csv("humann_pathway_abundance.csv", index_col=0)
+
+# Clinical metadata
+clinical = pd.read_csv("clinical_metadata.csv", index_col=0)
+
+# Align samples
+common_samples = list(
+    set(host_genotype.columns)
+    & set(rna_expr.columns)
+    & set(microbe_taxa.columns)
+)
+
+host_genotype = host_genotype[common_samples]
+rna_expr = rna_expr[common_samples]
+microbe_taxa = microbe_taxa[common_samples]
+microbe_pathway = microbe_pathway[common_samples]
+
+##########################################
+#2 Layer 2 — Domain-Level Abstraction
+###2.1 Host RNA → Pathway Scores (ssGSEA / GSVA in R)
+## using R
+library(GSVA)
+
+expr <- as.matrix(read.csv("rna_tpm_matrix.csv", row.names=1))
+gene_sets <- getGmt("hallmark.gmt")
+
+ssgsea_scores <- gsva(expr, gene_sets, method="ssgsea")
+write.csv(ssgsea_scores, "host_pathway_scores.csv") 
+
+## using python
+host_pathway = pd.read_csv("host_pathway_scores.csv", index_col=0)
+
+###2.2 Immune Deconvolution (CIBERSORT-style regression concept)
+from sklearn.linear_model import LinearRegression
+
+# reference immune signature matrix
+immune_ref = pd.read_csv("immune_signature_reference.csv", index_col=0)
+
+# Fit regression per sample
+immune_fraction = []
+
+for sample in rna_expr.columns:
+    model = LinearRegression()
+    model.fit(immune_ref.values, rna_expr[sample].loc[immune_ref.index])
+    immune_fraction.append(model.coef_)
+
+immune_fraction = pd.DataFrame(
+    immune_fraction,
+    index=rna_expr.columns,
+    columns=immune_ref.columns
+)
+
+###2.3  Microbial Functional Scores
+microbe_scfa_score = microbe_pathway.loc[
+    ["PWY-5676", "PWY-5005"]  # example SCFA-related pathways
+].sum()
+
+###############################################
+###Layer 3 — Host–Microbe Interaction Modeling
+###3.1 mbQTL Mapping (Host SNP ↔ Microbe Abundance)
+import statsmodels.api as sm
+
+results = []
+
+for snp in host_genotype.index:
+    for microbe in microbe_taxa.index:
+        X = host_genotype.loc[snp]
+        y = microbe_taxa.loc[microbe]
+
+        X = sm.add_constant(X)
+        model = sm.OLS(y, X).fit()
+
+        results.append([
+            snp,
+            microbe,
+            model.params[1],
+            model.pvalues[1]
+        ])
+
+mbqtl = pd.DataFrame(results, columns=["SNP","Microbe","Beta","Pvalue"])
+
+###3.2 Microbial Pathway ↔ Host Immune Pathway Coupling
+from scipy.stats import spearmanr
+
+coupling_results = []
+
+for mp in microbe_pathway.index:
+    for hp in host_pathway.index:
+        rho, p = spearmanr(
+            microbe_pathway.loc[mp],
+            host_pathway.loc[hp]
+        )
+        coupling_results.append([mp, hp, rho, p])
+
+coupling_df = pd.DataFrame(
+    coupling_results,
+    columns=["MicrobePath","HostPath","Rho","Pvalue"]
+)
+
+###3.3 Latent Integration (Multi-omic Embedding)
+###Using a simple VAE-style approach (sklearn PCA example):
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+# concatenate functional features
+combined = pd.concat([
+    host_pathway.T,
+    immune_fraction,
+    microbe_scfa_score.to_frame().T
+], axis=1)
+
+combined_scaled = StandardScaler().fit_transform(combined)
+
+pca = PCA(n_components=20)
+embedding = pca.fit_transform(combined_scaled)
+
+embedding_df = pd.DataFrame(
+    embedding,
+    index=combined.index
+)
+
+##################################################
+# Layer 4 — Clinical Modeling
+## 4.1 Drug Response Prediction
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import cross_val_score
+
+X = embedding_df
+y = clinical.loc[X.index, "Response"]
+
+model = RandomForestClassifier(n_estimators=200)
+scores = cross_val_score(model, X, y, cv=5, scoring="roc_auc")
+
+print("Mean AUC:", scores.mean())
+
+##4.2 Survival Analysis
+from lifelines import CoxPHFitter
+
+surv_data = clinical[["OS_time", "OS_event"]].join(embedding_df)
+
+cph = CoxPHFitter()
+cph.fit(surv_data, duration_col="OS_time", event_col="OS_event")
+
+cph.print_summary()
+
+
+
+
+
+
+
