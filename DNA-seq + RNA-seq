@@ -1,0 +1,217 @@
+### DNA-seq X RNA-seq pipeline
+Layer 1 — Raw Data Processing
+Layer 2 — Molecular Feature Abstraction
+      2.1 Pathway Scoring (ssGSEA style) pathway_scores → Sample × Pathway
+      2.2 Immune Deconvolution (CIBERSORT-style regression)  immune_df → Sample × Immune_Cell_Type
+      2.3 Clonality Estimation (Simplified CCF Calculation)
+Layer 3 — Cross-Omic Integration
+      3.1 CNV–Expression Coupling
+      3.2 Genotype → Pathway Mapping
+      3.3 Multi-Omic Latent Integration (Autoencoder) latent_embedding → Sample × 32 latent factors
+Layer 4 — Clinical Modeling
+      4.1 Response Prediction
+      4.2 Survival Analysis
+
+################################
+#Layer 1 — Raw Data Processing
+### 1 Load Data
+import pandas as pd
+import numpy as np
+
+# Mutation matrix (Sample × Gene binary)
+mutation_df = pd.read_csv("mutation_binary_matrix.tsv", sep="\t", index_col=0)
+
+# Gene-level CNV log2 ratios
+cnv_df = pd.read_csv("cnv_gene_level.tsv", sep="\t", index_col=0)
+
+# RNA expression TPM
+expr_df = pd.read_csv("expression_tpm.tsv", sep="\t", index_col=0)
+
+# Clinical metadata
+clinical_df = pd.read_csv("clinical_metadata.csv", index_col=0)
+
+##########################################
+#Layer 2 — Molecular Feature Abstraction
+###2.1 Pathway Scoring (ssGSEA style) pathway_scores → Sample × Pathway
+import gseapy as gp
+
+# Gene sets (e.g., Hallmark pathways)
+gene_sets = "h.all.v2023.1.Hs.symbols.gmt"
+
+ssgsea_res = gp.ssgsea(
+    data=expr_df,
+    gene_sets=gene_sets,
+    sample_norm_method='rank',
+    outdir=None
+)
+
+pathway_scores = ssgsea_res.res2d.pivot(
+    index='Term',
+    columns='Name',
+    values='NES'
+).T
+
+###2.2 Immune Deconvolution (CIBERSORT-style regression)  immune_df → Sample × Immune_Cell_Type
+from sklearn.linear_model import LinearRegression
+
+# signature_matrix: Genes × Immune_Cell_Types
+signature_matrix = pd.read_csv("immune_signature_matrix.tsv", sep="\t", index_col=0)
+
+common_genes = expr_df.columns.intersection(signature_matrix.index)
+
+Y = expr_df[common_genes].values
+S = signature_matrix.loc[common_genes].values
+
+model = LinearRegression(positive=True)
+immune_fractions = []
+
+for sample in range(Y.shape[0]):
+    model.fit(S, Y[sample])
+    immune_fractions.append(model.coef_)
+
+immune_df = pd.DataFrame(
+    immune_fractions,
+    index=expr_df.index,
+    columns=signature_matrix.columns
+)
+
+###2.3 Clonality Estimation (Simplified CCF Calculation)
+def estimate_ccf(vaf, purity, total_cn, mutated_cn=1):
+    numerator = vaf * (purity * total_cn + (1 - purity) * 2)
+    denominator = purity * mutated_cn
+    return numerator / denominator
+
+# Example mutation table
+mutation_table = pd.read_csv("mutation_vaf_table.tsv", sep="\t")
+
+mutation_table["CCF"] = mutation_table.apply(
+    lambda row: estimate_ccf(
+        row["VAF"],
+        row["Purity"],
+        row["Total_CN"],
+        row["Mutated_CN"]
+    ),
+    axis=1
+)
+
+#####  cluster by CCF:
+
+from sklearn.mixture import GaussianMixture
+
+gmm = GaussianMixture(n_components=3)
+mutation_table["CloneCluster"] = gmm.fit_predict(
+    mutation_table[["CCF"]]
+)
+
+###############################
+#Layer 3 — Cross-Omic Integration
+### 3.1 CNV–Expression Coupling
+from scipy.stats import spearmanr
+
+coupling_results = []
+
+for gene in cnv_df.columns:
+    if gene in expr_df.columns:
+        rho, pval = spearmanr(cnv_df[gene], expr_df[gene])
+        coupling_results.append([gene, rho, pval])
+
+coupling_df = pd.DataFrame(
+    coupling_results,
+    columns=["Gene", "SpearmanR", "Pvalue"]
+)
+
+functional_cnv = coupling_df.query("Pvalue < 0.01 & SpearmanR > 0.3")
+
+### 3.2 Genotype → Pathway Mapping
+from sklearn.linear_model import LogisticRegression
+
+gene = "KRAS"
+pathway = "HALLMARK_KRAS_SIGNALING_UP"
+
+X = mutation_df[[gene]]
+y = pathway_scores[pathway]
+
+model = LogisticRegression()
+model.fit(X, y > y.median())
+
+effect_size = model.coef_[0][0]
+
+### 3.3 Multi-Omic Latent Integration (Autoencoder) latent_embedding → Sample × 32 latent factors
+import torch
+import torch.nn as nn
+
+# Concatenate features
+multi_omic_features = pd.concat([
+    mutation_df,
+    cnv_df,
+    pathway_scores,
+    immune_df
+], axis=1).fillna(0)
+
+X = torch.tensor(multi_omic_features.values, dtype=torch.float32)
+
+class Autoencoder(nn.Module):
+    def __init__(self, input_dim, latent_dim=32):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, latent_dim)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, input_dim)
+        )
+
+    def forward(self, x):
+        z = self.encoder(x)
+        x_recon = self.decoder(z)
+        return z, x_recon
+
+model = Autoencoder(input_dim=X.shape[1])
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+for epoch in range(200):
+    z, recon = model(X)
+    loss = nn.MSELoss()(recon, X)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+latent_embedding = z.detach().numpy()
+
+################################
+###Layer 4 — Clinical Modeling
+### 4.1 Response Prediction
+from sklearn.ensemble import RandomForestClassifier
+
+X = latent_embedding
+y = clinical_df["Response"]
+
+clf = RandomForestClassifier()
+clf.fit(X, y)
+
+response_prob = clf.predict_proba(X)[:,1]
+
+### 4.2 Survival Analysis
+from lifelines import CoxPHFitter
+
+cox_df = pd.DataFrame(latent_embedding, index=clinical_df.index)
+cox_df["time"] = clinical_df["OS_time"]
+cox_df["event"] = clinical_df["OS_event"]
+
+cph = CoxPHFitter()
+cph.fit(cox_df, duration_col="time", event_col="event")
+
+cph.print_summary()
+
+
+
+
+
+
+
+
+
+
