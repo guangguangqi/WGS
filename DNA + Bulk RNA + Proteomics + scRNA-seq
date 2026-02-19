@@ -1,0 +1,265 @@
+# DNA + Bulk RNA + Proteomics + scRNA-seq → Clinical Modeling
+#Layer 1: New Data Inputs
+#Layer 2 — Molecular Feature Abstraction
+ 2.1 Bulk RNA & Protein Pathway Scoring Using GSEApy
+ 2.2 scRNA-seq Processing Using Scanpy
+ 2.3 Cell-Type Annotation 
+ 2.4 Pseudobulk per Sample × Cell Type
+ 2.5 Cell-Type-Specific Pathway Scores
+ 2.6 Cell Composition per Sample
+# Layer 3 — Cross-Omic Integration
+ 3.1 CNV → RNA → Protein Coupling
+ 3.2 Mutation → Pathway Effects
+ 3.3 RNA ↔ Protein Pathway Concordance
+ 3.4 Integrate scRNA Features into Bulk
+ 3.5 Multi-Omic Latent Integration
+# Layer 4 — Clinical Modeling
+ 4.1 Response Prediction Using scikit-learn
+ 4.2 Survival Analysis Using lifelines
+
+#Layer 1: New Data Inputs
+mutation_df      → Sample × Gene
+cnv_df           → Sample × Gene
+rna_df           → Sample × Gene (bulk RNA)
+protein_df       → Sample × Protein
+scrna_counts     → Cell × Gene
+cell_metadata    → Cell × {sample_id, cell_type}
+clinical_df      → Sample × outcomes
+gmt_file         → pathway gene sets
+
+#Layer 2 — Molecular Feature Abstraction
+2.1 Bulk RNA & Protein Pathway Scoring Using GSEApy
+import gseapy as gp
+
+rna_pathway = gp.ssgsea(
+    data=rna_df.T,
+    gene_sets=gmt_file,
+    sample_norm_method="rank"
+).res2d.T
+
+prot_pathway = gp.ssgsea(
+    data=protein_df.T,
+    gene_sets=gmt_file,
+    sample_norm_method="rank"
+).res2d.T
+
+# 2.2 scRNA-seq Processing Using Scanpy
+import scanpy as sc
+
+adata = sc.AnnData(scrna_counts)
+adata.obs = cell_metadata
+
+# QC + normalization
+sc.pp.normalize_total(adata)
+sc.pp.log1p(adata)
+
+# Highly variable genes
+sc.pp.highly_variable_genes(adata, n_top_genes=2000)
+adata = adata[:, adata.var.highly_variable]
+
+# PCA + neighbors + clustering
+sc.tl.pca(adata)
+sc.pp.neighbors(adata)
+sc.tl.umap(adata)
+sc.tl.leiden(adata)
+
+# 2.3 Cell-Type Annotation 
+ sc.tl.rank_genes_groups(adata, 'leiden')
+
+# 2.4 Pseudobulk per Sample × Cell Type
+import pandas as pd
+
+pseudobulk = []
+
+for (sample, celltype), idx in adata.obs.groupby(
+        ["sample_id", "cell_type"]
+    ).groups.items():
+
+    expr = adata[idx].X.mean(axis=0)
+    pseudobulk.append([
+        sample,
+        celltype,
+        *expr
+    ])
+
+pb_df = pd.DataFrame(
+    pseudobulk,
+    columns=["sample", "cell_type"] + adata.var_names.tolist()
+)
+
+# 2.5 Cell-Type-Specific Pathway Scores
+celltype_pathways = {}
+
+for ct in pb_df["cell_type"].unique():
+
+    mat = pb_df[pb_df["cell_type"] == ct] \
+        .set_index("sample") \
+        .drop(columns="cell_type")
+
+    scores = gp.ssgsea(
+        data=mat.T,
+        gene_sets=gmt_file
+    ).res2d.T
+
+    celltype_pathways[ct] = scores
+
+# 2.6 Cell Composition per Sample
+cell_counts = (
+    adata.obs
+    .groupby(["sample_id", "cell_type"])
+    .size()
+    .unstack(fill_value=0)
+)
+
+cell_frac = cell_counts.div(
+    cell_counts.sum(axis=1),
+    axis=0
+)
+
+# Layer 3 — Cross-Omic Integration
+3.1 CNV → RNA → Protein Coupling
+common = (
+    cnv_df.columns
+    .intersection(rna_df.columns)
+    .intersection(protein_df.columns)
+)
+
+coupling = []
+
+for g in common:
+    coupling.append({
+        "gene": g,
+        "cnv_rna": cnv_df[g].corr(rna_df[g]),
+        "rna_prot": rna_df[g].corr(protein_df[g]),
+        "cnv_prot": cnv_df[g].corr(protein_df[g])
+    })
+
+coupling_df = pd.DataFrame(coupling)
+
+3.2 Mutation → Pathway Effects
+from scipy.stats import ttest_ind
+
+results = []
+
+for gene in mutation_df.columns:
+    mut = mutation_df[gene] > 0
+
+    for p in rna_pathway.columns:
+        t, pval = ttest_ind(
+            rna_pathway.loc[mut, p],
+            rna_pathway.loc[~mut, p],
+            nan_policy="omit"
+        )
+
+        results.append({
+            "gene": gene,
+            "pathway": p,
+            "p_value": pval
+        })
+
+geno_pathway = pd.DataFrame(results)
+
+3.3 RNA ↔ Protein Pathway Concordance
+common_p = rna_pathway.columns.intersection(prot_pathway.columns)
+
+concordance = pd.Series({
+    p: rna_pathway[p].corr(prot_pathway[p])
+    for p in common_p
+})
+
+3.4 Integrate scRNA Features into Bulk
+Combine:
+Bulk omics
+Cell composition
+Cell-type pathways
+
+multi_features = pd.concat([
+    rna_pathway,
+    prot_pathway,
+    cell_frac
+], axis=1)
+
+# Optional: include specific cell-type pathways
+
+tumor_ct_scores = celltype_pathways["TumorCells"]
+multi_features = multi_features.join(
+    tumor_ct_scores,
+    rsuffix="_tumor"
+)
+
+3.5 Multi-Omic Latent Integration
+import torch
+import torch.nn as nn
+
+X = torch.tensor(
+    multi_features.fillna(0).values,
+    dtype=torch.float32
+)
+
+class AE(nn.Module):
+    def __init__(self, d, z=32):
+        super().__init__()
+        self.enc = nn.Sequential(
+            nn.Linear(d, 128),
+            nn.ReLU(),
+            nn.Linear(128, z)
+        )
+        self.dec = nn.Sequential(
+            nn.Linear(z, 128),
+            nn.ReLU(),
+            nn.Linear(128, d)
+        )
+
+    def forward(self, x):
+        z = self.enc(x)
+        return self.dec(z), z
+
+model = AE(X.shape[1])
+opt = torch.optim.Adam(model.parameters(), 1e-3)
+
+for _ in range(200):
+    opt.zero_grad()
+    recon, z = model(X)
+    loss = nn.MSELoss()(recon, X)
+    loss.backward()
+    opt.step()
+
+latent = pd.DataFrame(
+    z.detach().numpy(),
+    index=multi_features.index
+)
+
+# Layer 4 — Clinical Modeling
+4.1 Response Prediction Using scikit-learn
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import cross_val_score
+
+X = latent.loc[clinical_df.index]
+y = clinical_df["response"]
+
+clf = RandomForestClassifier(n_estimators=300)
+
+auc = cross_val_score(
+    clf, X, y, cv=5, scoring="roc_auc"
+).mean()
+
+print("AUC:", auc)
+
+4.2 Survival Analysis Using lifelines
+from lifelines import CoxPHFitter
+
+surv = pd.concat([
+    latent,
+    clinical_df[["survival_time", "event"]]
+], axis=1)
+
+cph = CoxPHFitter()
+cph.fit(
+    surv,
+    duration_col="survival_time",
+    event_col="event"
+)
+
+cph.print_summary()
+
+
