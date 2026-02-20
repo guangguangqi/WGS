@@ -6,6 +6,11 @@ Step 4 — Differential Expression
 Step 5 — Mediation Test (Mutation → Pathway → Surface)
 Step 6 — Combine Evidence
 
+Step 0 — Inputs
+rna_df              → Sample × Gene
+pathway_scores      → Sample × Pathway
+surface_gene_list   → list of surface genes
+mutation_df         → Sample × Gene
 
 Step 1 — Select Driver Pathway
 driver_pathway = "MAPK_SIGNALING"
