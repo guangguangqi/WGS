@@ -107,3 +107,86 @@ final["score"] = (
 final = final.sort_values("score", ascending=False)
 
 
+#######################################################
+#######################################################
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from scipy.stats import ttest_ind
+
+def run_advanced_surface_pipeline(rna_df, mutation_df, pathway_scores, surface_genes, normal_exp_df):
+    """
+    rna_df: Sample x Gene (TPM/Log2)
+    mutation_df: Sample x Gene (0/1)
+    pathway_scores: Sample x Pathway_Score
+    surface_genes: List of validated surface proteins
+    normal_exp_df: Tissue x Gene (Reference median expression from GTEx)
+    """
+    
+    driver_pathway = "MAPK_SIGNALING"
+    mutation_gene = "KRAS"
+    results = []
+
+    # 1. Align Data
+    common_samples = rna_df.index.intersection(pathway_scores.index).intersection(mutation_df.index)
+    X_mut = mutation_df.loc[common_samples, mutation_gene]
+    y_path = pathway_scores.loc[common_samples, driver_pathway]
+    
+    # 2. Filter available surface genes
+    valid_surface_genes = [g for g in surface_genes if g in rna_df.columns]
+
+    for g in valid_surface_genes:
+        gene_exp = rna_df.loc[common_samples, g]
+
+        # --- A. CORRELATION & DE ---
+        corr = gene_exp.corr(y_path)
+        
+        # --- B. CAUSAL MEDIATION (Simplified ACME) ---
+        # Model: Gene ~ Mutation + Pathway
+        # If Pathway coef is high and Mutation coef drops, it's a downstream reporter
+        med_features = pd.concat([X_mut, y_path], axis=1)
+        med_features = sm.add_constant(med_features)
+        model = sm.OLS(gene_exp, med_features).fit()
+        
+        pathway_effect = model.params[driver_pathway]
+        pathway_p = model.pvalues[driver_pathway]
+
+        # --- C. SAFETY FILTER (Tumor vs Normal) ---
+        # Calculate Specificity: Tumor Median / Max Normal Median
+        avg_tumor = gene_exp.median()
+        max_normal = normal_exp_df[g].max() if g in normal_exp_df.columns else 999
+        
+        # Therapeutic Window (Simple Ratio)
+        specificity_ratio = avg_tumor / (max_normal + 0.1)
+
+        results.append({
+            "gene": g,
+            "correlation": corr,
+            "pathway_beta": pathway_effect, # Strength of causal link
+            "pathway_p": pathway_p,
+            "max_normal_tpm": max_normal,
+            "specificity_ratio": specificity_ratio
+        })
+
+    # 3. Build Ranking DataFrame
+    res_df = pd.DataFrame(results)
+
+    # --- D. THE TARGET PRIORITY SCORE (TPS) ---
+    # We want: High Correlation + High Beta + Low P-value + Low Normal Expression
+    # Using log-transform on p-value for scaling
+    res_df['tps_score'] = (
+        res_df['correlation'].abs() * 
+        res_df['pathway_beta'].abs() * 
+        (-np.log10(res_df['pathway_p'] + 1e-10)) * 
+        np.log2(res_df['specificity_ratio'] + 1)
+    )
+
+    return res_df.sort_values("tps_score", ascending=False)
+
+# --- E. POST-PROCESSING FILTERS ---
+# final_targets = res_df[
+#     (res_df['max_normal_tpm'] < 5) &  # Safety Cutoff
+#     (res_df['pathway_p'] < 0.05)     # Causal Significance
+# ]
+
+
