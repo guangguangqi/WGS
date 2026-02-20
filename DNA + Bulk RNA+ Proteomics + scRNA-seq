@@ -1,0 +1,178 @@
+Genotype → Pathway → Protein → Cell Type → Therapeutic Target
+
+DNA mutation
+   ↓
+Bulk RNA pathway activation
+   ↓
+Candidate surface genes (surfaceome)
+   ↓
+Proteomics confirmation (protein present)
+   ↓
+scRNA validation (tumor-specific expression)
+   ↓
+Causal mediation testing
+   ↓
+Rank therapeutic surface antigens
+
+
+Step 0: Inputs
+rna_df            → Sample × Gene
+pathway_scores    → Sample × Pathway
+mutation_df       → Sample × Gene
+protein_df        → Sample × Protein abundance
+scrna_counts      → Cell × Gene
+cell_metadata     → Cell × {sample_id, cell_type}
+surface_gene_list → Known surface proteins
+
+Step 1 — Driver Pathway
+driver_pathway = "MAPK_SIGNALING"
+y = pathway_scores[driver_pathway]
+
+Step 2 — Surface Genes Present in Data
+surface_genes = [
+    g for g in surface_gene_list
+    if g in rna_df.columns
+]
+
+Step 3 — Bulk RNA Association  
+3.1 Correlation with pathway
+
+import pandas as pd
+corr_df = pd.DataFrame({
+    g: rna_df[g].corr(y)
+    for g in surface_genes
+}, index=["corr"]).T
+
+3.2 Differential expression (high vs low pathway)
+from scipy.stats import ttest_ind
+
+high = y > y.quantile(0.75)
+low  = y < y.quantile(0.25)
+
+de_results = []
+
+for g in surface_genes:
+    t, p = ttest_ind(
+        rna_df.loc[high, g],
+        rna_df.loc[low, g],
+        nan_policy="omit"
+    )
+    de_results.append((g, t, p))
+
+de_df = pd.DataFrame(
+    de_results,
+    columns=["gene", "t_stat", "p_value"]
+).set_index("gene")
+
+Step 4 — Proteomics Confirmation
+prot_genes = protein_df.columns.intersection(surface_genes)
+
+prot_corr = pd.DataFrame({
+    g: protein_df[g].corr(y)
+    for g in prot_genes
+}, index=["prot_corr"]).T
+
+Optional: require minimum abundance
+prot_abundance = protein_df.mean()
+prot_abundance = prot_abundance.loc[prot_genes]
+
+Step 5 — scRNA-seq Processing
+import scanpy as sc
+
+adata = sc.AnnData(scrna_counts)
+adata.obs = cell_metadata
+
+sc.pp.normalize_total(adata)
+sc.pp.log1p(adata)
+
+Step 6 — Tumor-Specific Expression
+#Compute mean expression per cell type.
+
+expr_by_celltype = (
+    pd.DataFrame(
+        adata.X,
+        columns=adata.var_names
+    )
+    .groupby(adata.obs["cell_type"])
+    .mean()
+)
+
+# Assume tumor cell label = "Tumor"
+
+tumor_expr = expr_by_celltype.loc["Tumor"]
+normal_expr = expr_by_celltype.drop("Tumor").mean()
+
+# Tumor specificity score:
+
+tumor_specificity = (
+    tumor_expr[surface_genes] -
+    normal_expr[surface_genes]
+)
+
+Step 7 — Detection Rate in Tumor Cells  Important for CAR-T/ADC targets.
+tumor_cells = adata[adata.obs["cell_type"] == "Tumor"]
+
+detect_rate = (
+    (tumor_cells.X > 0)
+    .mean(axis=0)
+)
+
+detect_rate = pd.Series(
+    detect_rate,
+    index=adata.var_names
+).loc[surface_genes]
+
+Step 8 — Mediation Analysis  Mutation → Pathway → Surface Gene
+import statsmodels.api as sm
+
+mutation_gene = "KRAS"
+X_mut = mutation_df[mutation_gene]
+
+med_results = []
+
+for g in surface_genes:
+
+    model = sm.OLS(
+        rna_df[g],
+        sm.add_constant(
+            pd.concat([X_mut, y], axis=1)
+        )
+    ).fit()
+
+    med_results.append({
+        "gene": g,
+        "pathway_coef": model.params[y.name],
+        "p_med": model.pvalues[y.name]
+    })
+
+med_df = pd.DataFrame(med_results).set_index("gene")
+
+Step 9 — Combine All Evidence
+final = (
+    corr_df
+    .join(de_df)
+    .join(prot_corr)
+    .join(prot_abundance.rename("prot_abundance"))
+    .join(tumor_specificity.rename("tumor_specificity"))
+    .join(detect_rate.rename("detect_rate"))
+    .join(med_df)
+)
+
+Step 10 — Therapeutic Ranking Score
+import numpy as np
+
+final["score"] = (
+    abs(final["corr"]) *
+    abs(final["prot_corr"]) *
+    final["tumor_specificity"] *
+    final["detect_rate"] *
+    -np.log10(final["p_med"] + 1e-8)
+)
+
+final = final.sort_values("score", ascending=False)
+
+
+
+
+
+
