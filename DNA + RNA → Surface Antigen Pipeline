@@ -1,0 +1,109 @@
+Pipeline
+Step 1 — Select Driver Pathway
+Step 2 — Candidate Surface Genes in Data
+Step 3 — Correlation Screening
+Step 4 — Differential Expression
+Step 5 — Mediation Test (Mutation → Pathway → Surface)
+Step 6 — Combine Evidence
+
+
+Step 1 — Select Driver Pathway
+driver_pathway = "MAPK_SIGNALING"
+y = pathway_scores[driver_pathway]
+
+Step 2 — Candidate Surface Genes in Data
+surface_genes = [
+    g for g in surface_gene_list
+    if g in rna_df.columns
+]
+
+Step 3 — Correlation Screening
+import pandas as pd
+
+corr_results = []
+
+for g in surface_genes:
+    corr = rna_df[g].corr(y)
+
+    corr_results.append({
+        "gene": g,
+        "corr": corr
+    })
+
+corr_df = pd.DataFrame(corr_results) \
+    .sort_values("corr", ascending=False)
+
+Step 4 — Differential Expression
+from scipy.stats import ttest_ind
+
+high = y > y.quantile(0.75)
+low  = y < y.quantile(0.25)
+
+de_results = []
+
+for g in surface_genes:
+    t, p = ttest_ind(
+        rna_df.loc[high, g],
+        rna_df.loc[low, g],
+        nan_policy="omit"
+    )
+
+    de_results.append({
+        "gene": g,
+        "t_stat": t,
+        "p_value": p
+    })
+
+de_df = pd.DataFrame(de_results)
+
+Step 5 — Mediation Test (Mutation → Pathway → Surface)
+import statsmodels.api as sm
+
+mutation_gene = "KRAS"
+
+med_results = []
+
+X_mut = mutation_df[mutation_gene]
+
+for g in surface_genes:
+
+    # Pathway ~ Mutation
+    model1 = sm.OLS(y, sm.add_constant(X_mut)).fit()
+
+    # Surface ~ Mutation + Pathway
+    model2 = sm.OLS(
+        rna_df[g],
+        sm.add_constant(
+            pd.concat([X_mut, y], axis=1)
+        )
+    ).fit()
+
+    med_results.append({
+        "gene": g,
+        "pathway_coef": model2.params[y.name],
+        "p_value": model2.pvalues[y.name]
+    })
+
+med_df = pd.DataFrame(med_results)
+
+Step 6 — Combine Evidence
+final = (
+    corr_df
+    .merge(de_df, on="gene")
+    .merge(med_df, on="gene")
+)
+
+# Example ranking
+final["score"] = (
+    abs(final["corr"]) *
+    -np.log10(final["p_value_x"]) *
+    abs(final["pathway_coef"])
+
+
+
+
+)
+
+final = final.sort_values("score", ascending=False)
+
+
