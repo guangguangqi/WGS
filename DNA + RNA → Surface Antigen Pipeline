@@ -194,4 +194,39 @@ def run_advanced_surface_pipeline(rna_df, mutation_df, pathway_scores, surface_g
 #     (res_df['pathway_p'] < 0.05)     # Causal Significance
 # ]
 
+##New Step 6 — Layer 5: Tumor Specificity Filtering
+# Goal: Ensure (Tumor Expression >> Normal Expression)
+
+def apply_layer_5_filter(final_df, normal_df, threshold=10.0):
+    """
+    normal_df: Index = Tissues, Columns = Genes (Median TPM)
+    threshold: Max allowable TPM in any vital normal tissue
+    """
+    # 1. Identify "Off-Target" Risk
+    # We look for the MAXIMUM expression across all normal tissues
+    max_normal_presence = normal_df.max(axis=0) 
+    
+    # 2. Calculate Fold Change (Tumor vs Normal)
+    # final_df['avg_tumor_expr'] comes from your rna_df
+    final_df['max_normal'] = final_df['gene'].map(max_normal_presence)
+    final_df['log2_fc_tn'] = np.log2(final_df['avg_tumor'] / (final_df['max_normal'] + 0.1))
+    
+    # 3. Apply the "Safety Gate"
+    # Genes with high expression in Heart/Brain/Liver are penalized or removed
+    final_df['is_safe'] = final_df['max_normal'] < threshold
+    
+    return final_df
+
+# 🔹 New Step 7 — Evidence Synthesis (The "True" Step 6) 
+# Combine L3 (Association), L4 (Mediation), and L5 (Specificity)
+
+final["final_score"] = (
+    final["corr"] *               # L3: Tracks pathway
+    final["pathway_coef"] *       # L4: Causal link
+    final["log2_fc_tn"]           # L5: Tumor specificity
+)
+
+# Filter for safety first
+top_candidates = final[final['is_safe'] == True].sort_values("final_score", ascending=False)
+
 
