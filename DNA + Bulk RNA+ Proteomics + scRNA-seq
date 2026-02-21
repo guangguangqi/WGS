@@ -14,6 +14,20 @@ Causal mediation testing
    ↓
 Rank therapeutic surface antigens
 
+Step 0: Inputs
+Step 1 — Driver Pathway
+Step 2 — Surface Genes Present in Data
+Step 3 — Bulk RNA Association  
+3.1 Correlation with pathway
+3.2 Differential expression (high vs low pathway)
+Step 4 — Proteomics Confirmation
+Step 5 — scRNA-seq Processing
+Step 6 — Tumor-Specific Expression
+Step 7 — Detection Rate in Tumor Cells  Important for CAR-T/ADC targets.
+Step 8 — Mediation Analysis  Mutation → Pathway → Surface Gene
+Step 9 — Combine All Evidence
+Step 10 — Therapeutic Ranking Score
+
 
 Step 0: Inputs
 rna_df            → Sample × Gene
