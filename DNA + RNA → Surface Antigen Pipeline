@@ -5,6 +5,7 @@ Step 3 — Correlation Screening
 Step 4 — Differential Expression
 Step 5 — Mediation Test (Mutation → Pathway → Surface)
 Step 6 — Combine Evidence
+Step 7 — Therapeutic Ranking Score
 
 Step 0 — Inputs
 rna_df              → Sample × Gene
