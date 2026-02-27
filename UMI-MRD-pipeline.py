@@ -63,30 +63,57 @@ Use code with caution.
 #umi_tools dedup is great for counting (RNA-seq), but for ctDNA Mutation Calling, it is often better to use Consensus Calling 
 ## (which creates a new "virtual" read based on all family members).
 
-###step2 UMI Consensus Building
-# 2.1 Group Reads by UMI (Family identification)
+######
+This is a solid transition from simple deduplication to consensus calling, which is the gold standard for ctDNA and MRD. 
+By collapsing reads from the same original molecule, you suppress random sequencing and PCR errors, allowing you to see variants at much lower frequencies (often <0.1%). 
+
+However, fgbio tools like GroupReadsByUmi and CallMolecularConsensusReads have strict requirements for SAM tags and read grouping 
+that your current script needs to address to avoid empty outputs or errors. 
+
+Critical Fixes for Your Pipeline
+Tag Your BAM: fgbio expects the UMI to be in a specific SAM tag (usually RX). 
+Since umi_tools puts the UMI in the read name, you must use fgbio AnnotateBamWithUmis or similar to move it into the RX tag before grouping.
+
+Add Mate Tags: GroupReadsByUmi requires the MQ (mate mapping quality) tag for paired-end reads. Use samtools fixmate or fgbio SetMateInformation to add this.
+
+Sort Order: CallMolecularConsensusReads requires the BAM to be sorted by QueryName or Template so that all reads from the same molecule are
+
+
+# 2.0 Prepare BAM for fgbio (Move UMI from read name to RX tag and add mate info)
+# This assumes umi_tools put the UMI at the end of the read name (default)
+fgbio AnnotateBamWithUmis \
+    -i aligned_sorted.bam \
+    -f R1_processed.fastq.gz \
+    -o annotated.bam
+
+fgbio SetMateInformation \
+    -i annotated.bam \
+    -o annotated_with_mate.bam
+
+# 2.1 Group Reads by UMI
+# Use 'template' strategy for better performance with paired-end reads
 fgbio GroupReadsByUmi \
-    --input=aligned_sorted.bam \
+    --input=annotated_with_mate.bam \
     --output=grouped.bam \
     --strategy=adjacency \
     --edits=1 \
     --min-mapq=30
 
-# 2.2 Call Molecular Consensus (Collapsing families into single high-quality molecules)
+# 2.2 Call Molecular Consensus 
+# Note: Output is UNMAPPED; --min-reads=2 is standard for error correction
 fgbio CallMolecularConsensusReads \
     --input=grouped.bam \
     --output=unaligned_consensus.bam \
     --min-reads=2 \
     --min-input-base-quality=20
 
-# 2.3 Re-align Consensus Reads (Mapping molecules back to genome)
+# 2.3 Re-align Consensus Reads
+# Crucial: Use 'samtools fastq' to get R1/R2 and pipe to BWA
 samtools fastq unaligned_consensus.bam | \
 bwa mem -t 8 -p hg38.analysisSet.fa - | \
 samtools view -bS - > consensus_aligned.bam
 
-# 2.4 Final Sort and Index for the Consensus BAM
-samtools sort consensus_aligned.bam -o consensus_final.bam
-samtools index consensus_final.bam
+
 
 
 ###step3 Variant Calling    
@@ -504,6 +531,7 @@ def export_clinical_report(mrd_results):
 # 执行生成
 generate_audit_log(mrd_report)
 export_clinical_report(mrd_report)
+
 
 
 
