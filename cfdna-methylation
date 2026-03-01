@@ -1,0 +1,165 @@
+Part 1 — Bash Pipeline（原始 FASTQ → CpG 甲基化文件）
+1️⃣ 建立 bisulfite genome index（一次性）
+bismark_genome_preparation /path/to/genome/
+2️⃣ Trim（使用 Trim Galore）
+trim_galore --paired \
+  --illumina \
+  --fastqc \
+  sample_R1.fastq.gz sample_R2.fastq.gz
+
+输出：
+
+sample_R1_val_1.fq.gz
+sample_R2_val_2.fq.gz
+3️⃣ 比对（Bismark）
+bismark \
+  --genome /path/to/genome \
+  -1 sample_R1_val_1.fq.gz \
+  -2 sample_R2_val_2.fq.gz \
+  -o bismark_output/
+4️⃣ 去重（cfDNA 极其重要）
+deduplicate_bismark --paired bismark_output/sample.bam
+
+如果有 UMI，可以先用 umi_tools：
+
+umi_tools dedup \
+  -I sample.bam \
+  --paired \
+  -S sample_dedup.bam
+5️⃣ 甲基化调用
+bismark_methylation_extractor \
+  --paired-end \
+  --comprehensive \
+  --bedGraph \
+  --cytosine_report \
+  sample_deduplicated.bam
+
+输出：
+
+CpG_report.txt
+
+bedGraph
+
+coverage file
+
+🧠 Part 2 — Python：构建 Region-Level 甲基化矩阵
+
+假设我们已有：
+
+CpG_report.txt
+
+格式：
+
+chr  position  strand  count_methylated  count_unmethylated
+读取 CpG 数据
+import pandas as pd
+
+cpg = pd.read_csv(
+    "CpG_report.txt",
+    sep="\t",
+    header=None,
+    names=["chr", "pos", "strand", "meth", "unmeth"]
+)
+
+cpg["coverage"] = cpg["meth"] + cpg["unmeth"]
+cpg = cpg[cpg["coverage"] >= 5]  # 过滤低覆盖
+cpg["beta"] = cpg["meth"] / cpg["coverage"]
+聚合到 1kb window
+window_size = 1000
+
+cpg["window_start"] = (cpg["pos"] // window_size) * window_size
+cpg["window_id"] = cpg["chr"] + ":" + cpg["window_start"].astype(str)
+
+region_methylation = (
+    cpg.groupby("window_id")["beta"]
+    .mean()
+    .reset_index()
+)
+
+region_methylation.columns = ["region", "mean_beta"]
+
+输出：
+
+region          mean_beta
+chr1:0          0.72
+chr1:1000       0.68
+...
+🧬 Part 3 — 构建样本 × 区域矩阵
+
+假设多样本：
+
+import glob
+
+files = glob.glob("*/region_methylation.csv")
+
+matrix = []
+
+for f in files:
+    sample_name = f.split("/")[0]
+    df = pd.read_csv(f)
+    df = df.set_index("region")
+    df.columns = [sample_name]
+    matrix.append(df)
+
+methylation_matrix = pd.concat(matrix, axis=1)
+methylation_matrix = methylation_matrix.fillna(0)
+
+得到：
+
+region       sample1   sample2   sample3
+chr1:0        0.72      0.68      0.74
+...
+🤖 Part 4 — 简单癌症分类模型（示例）
+
+假设有标签：
+
+labels = pd.read_csv("labels.csv")  # sample, cancer(0/1)
+
+X = methylation_matrix.T
+y = labels.set_index("sample").loc[X.index]["cancer"]
+使用 LASSO Logistic Regression
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+model = LogisticRegression(
+    penalty="l1",
+    solver="saga",
+    max_iter=5000
+)
+
+model.fit(X_train, y_train)
+
+y_pred = model.predict_proba(X_test)[:, 1]
+auc = roc_auc_score(y_test, y_pred)
+
+print("AUC:", auc)
+🧠 Part 5 — 简单组织去卷积（NNLS 示例）
+
+假设：
+
+R = reference tissue methylation matrix
+
+M = sample methylation vector
+
+import numpy as np
+from scipy.optimize import nnls
+
+# R: regions x tissues
+# M: regions x 1
+
+weights, _ = nnls(R, M)
+
+weights = weights / weights.sum()
+
+print(weights)
+
+输出：
+
+Liver: 0.62
+Lung: 0.12
+Immune: 0.26
