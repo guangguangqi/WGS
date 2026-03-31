@@ -1,3 +1,13 @@
+step1 Read Alignment & UMI Tagging
+step2 Prepare BAM for fgbio (Move UMI from read name to RX tag and add mate info)
+step3 Variant Calling
+step 4 Variant Annotation                  
+step 5 Feature Engineering
+step 6 Statistical Scoring
+step 7 ML Scoring (XGBoost) 
+step 8 Probability Calibration & Thresholding
+step 9 Sample-Level Aggregation
+
 ### step0 Preprocessing & UMI Extraction
 # 0.1 Download small example UMI dataset
 wget https://github.com/CGATOxford/UMI-tools/releases/download/v0.2.3/example.fastq.gz
