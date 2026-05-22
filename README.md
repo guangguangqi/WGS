@@ -1,3 +1,5 @@
+Running Python Multi-Omics Bioinformatics Pipeline
+
 This study establishes an end-to-end, high-performance Python workflow designed to process raw The Cancer Genome Atlas Breast Invasive Carcinoma (TCGA-BRCA: portal.gdc.cancer.gov/projects/TCGA-BRCA ) RNA-Seq datasets and isolate robust downstream biological pathways without the computational overhead of large-scale matrix operations.
 
 Input:  The raw master matrix was parsed using TCGA barcodes to differentiate sample source types (tumor vs. healthy controls). To optimize local computational memory footprint and enhance script reproducibility for GitHub integration, a rigorous 6 vs. 6 sample subsetting strategy was executed (6 Tumor vs. 6 Healthy Normal uploaded in the input data) and   4 Tumor Vs 4 Healthy database were used for the analysis.
